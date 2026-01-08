@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "BeatSaver to BeatLeader Replay",
+  "version": "2.0",
+  "description": "Apre direttamente il primo replay su BeatLeader usando le API",
+  "permissions": [
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://api.beatsaver.com/*",
+    "https://api.beatleader.xyz/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://beatsaver.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ]
+}
