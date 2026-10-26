@@ -10,81 +10,97 @@ const DIFF_PRIORITY = {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "findReplay") {
         findReplayId(request.mapKey)
-            .then(result => {
-                // result contiene: { found: bool, scoreId: string, suffix: string }
-                sendResponse(result);
-            })
+            .then(result => sendResponse(result))
             .catch(err => {
                 console.error("Errore Background:", err);
-                // In caso di errore grave, fallback su Expert+ (91)
                 sendResponse({ found: false, suffix: "91", error: err.toString() });
             });
-        
         return true; 
     }
 });
 
 async function findReplayId(mapKey) {
     try {
-        // 1. Ottieni dati da BeatSaver
+        // 1. Dati da BeatSaver
+        console.log("1. Cerco su BeatSaver la mappa:", mapKey);
         const bsResponse = await fetch(`https://api.beatsaver.com/maps/id/${mapKey}`);
         if (!bsResponse.ok) throw new Error("BeatSaver API error");
         const bsData = await bsResponse.json();
         
         const latestVersion = bsData.versions[0];
         const hash = latestVersion.hash;
+        console.log("Hash trovato:", hash);
 
-        // 2. Determina la difficoltà MIGLIORE disponibile (Standard mode)
-        // Filtriamo solo le diff 'Standard'
+        // 2. Determina la difficoltà MIGLIORE (Standard)
         const standardDiffs = latestVersion.diffs.filter(d => d.characteristic === "Standard");
-        
-        let bestDiffValue = 9; // Default Expert+
+        let bestDiffValue = 9;
         let bestDiffName = "ExpertPlus";
-
-        // Cerchiamo la difficoltà più alta presente nella mappa
         const priorityKeys = ["ExpertPlus", "Expert", "Hard", "Normal", "Easy"];
+        
         for (const key of priorityKeys) {
             if (standardDiffs.some(d => d.difficulty === key)) {
                 bestDiffValue = DIFF_PRIORITY[key];
                 bestDiffName = key;
-                break; // Trovata la più alta, ci fermiamo
+                break;
             }
         }
-
-        // Costruiamo il suffisso (es. 91, 71, etc.)
-        // Nota: Assumiamo sempre Standard (1) come mode
         const currentSuffix = `${bestDiffValue}1`;
+        console.log("Difficoltà scelta:", bestDiffName, "- Suffisso previsto:", currentSuffix);
 
-        // 3. Ottieni la lista delle leaderboard da BeatLeader
-        const blResponse = await fetch(`https://api.beatleader.xyz/leaderboards/hash/${hash}`);
-        const blData = await blResponse.json();
+        // 3. Ottieni le leaderboard da BeatLeader (Usiamo il dominio .com)
+        console.log("2. Cerco la leaderboard su BeatLeader per l'hash:", hash);
+        const blResponse = await fetch(`https://api.beatleader.com/leaderboards/hash/${hash}`);
         
-        const leaderboards = blData.leaderboards || blData; // Gestione array o oggetto
-        
-        // Trova la leaderboard specifica usando il valore calcolato
-        const specificLb = leaderboards.find(lb => 
-            lb.difficulty.value === bestDiffValue && 
-            lb.difficulty.modeName === "Standard"
-        );
+        let lbId = `${hash}${currentSuffix}`; // Fallback ID
 
-        // Se non esiste la leaderboard (strano se la mappa ha la diff, ma possibile), restituiamo il suffisso per il fallback
-        if (!specificLb) {
+        if (blResponse.ok) {
+            const blData = await blResponse.json();
+            const leaderboards = blData.leaderboards || blData;
+            
+            if (Array.isArray(leaderboards)) {
+                // Cerchiamo la leaderboard in modo più flessibile
+                const specificLb = leaderboards.find(lb => 
+                    lb.difficulty && 
+                    (lb.difficulty.value === bestDiffValue || lb.difficulty.difficultyName === bestDiffName) &&
+                    (lb.difficulty.modeName === "Standard" || lb.difficulty.mode === 1)
+                );
+
+                if (specificLb && specificLb.id) {
+                    console.log("Leaderboard trovata tramite API! ID esatto:", specificLb.id);
+                    lbId = specificLb.id;
+                } else {
+                    console.warn("Leaderboard specifica non trovata nell'array. Uso ID manuale.");
+                }
+            } else {
+                console.warn("Struttura dati imprevista da /leaderboards/hash/");
+            }
+        } else {
+            console.warn("Nessuna mappa trovata in /leaderboards/hash/. Status:", blResponse.status);
+        }
+
+        // 4. Cerchiamo il punteggio migliore
+        console.log("3. Cerco i punteggi per la leaderboard:", lbId);
+        const scoresResponse = await fetch(`https://api.beatleader.com/leaderboard/${lbId}?page=1&count=1`);
+        
+        if (!scoresResponse.ok) {
+            console.error("Errore fetch punteggi. Status:", scoresResponse.status);
             return { found: false, suffix: currentSuffix };
         }
-
-        // 4. Cerchiamo il punteggio
-        const scoresResponse = await fetch(`https://api.beatleader.xyz/leaderboard/${specificLb.id}?page=1&count=1`);
+        
         const scoresData = await scoresResponse.json();
-
-        if (scoresData.scores && scoresData.scores.length > 0) {
-            return { found: true, scoreId: scoresData.scores[0].id, suffix: currentSuffix };
+        // Controlliamo vari nomi possibili dell'array dei punteggi
+        const scoreList = scoresData.scores || scoresData.plays || scoresData.data;
+        
+        if (scoreList && scoreList.length > 0) {
+            console.log("Trovato replay! ID:", scoreList[0].id);
+            return { found: true, scoreId: scoreList[0].id, suffix: currentSuffix };
         }
-
-        // Nessun punteggio trovato, ma sappiamo il suffisso corretto per la pagina classifica
+        
+        console.log("Nessun punteggio presente in questa leaderboard (array vuoto).");
         return { found: false, suffix: currentSuffix };
 
     } catch (error) {
-        console.error("Errore ricerca API:", error);
-        return { found: false, suffix: "91" }; // Fallback di sicurezza
+        console.error("Errore ricerca API generale:", error);
+        return { found: false, suffix: "91" }; // Fallback
     }
 }
